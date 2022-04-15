@@ -1,0 +1,14 @@
+path = "./test"
+#btrfs = true
+
+[[periods]]
+period_length = "1w"
+chunk_size = "1h"
+
+[[periods]]
+period_length = "4w"
+chunk_size = "1d"
+
+[[periods]]
+period_length = "40w"
+chunk_size = "4w"
