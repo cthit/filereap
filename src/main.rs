@@ -119,7 +119,7 @@ fn check_files_to_keep(config: &Config, files: &[FileName]) -> Result<HashSet<Fi
     let now = Local::now();
     let mut cursor = now;
 
-    for period in &config.periods {
+    'period: for period in &config.periods {
         if files.is_empty() {
             trace!("no more files, skipping remaining periods");
             break;
@@ -147,7 +147,7 @@ fn check_files_to_keep(config: &Config, files: &[FileName]) -> Result<HashSet<Fi
             let end_of_chunk = cursor - chunk_size;
             cursor = end_of_chunk;
 
-            let mut chunk_file_to_keep = None;
+            let mut found_file_for_chunk = false;
 
             trace!("processing chunk {end_of_chunk} -> {start_of_chunk}");
             loop {
@@ -160,18 +160,24 @@ fn check_files_to_keep(config: &Config, files: &[FileName]) -> Result<HashSet<Fi
                     trace!("{file} outside of chunk bounds. ignoring.");
                     keep_files.insert(file);
                 } else if file > end_of_chunk {
-                    trace!("{file} is in chunk. beaten by {chunk_file_to_keep:?}");
-                    chunk_file_to_keep.get_or_insert(file);
+                    if !found_file_for_chunk {
+                        keep_files.insert(file);
+                        found_file_for_chunk = true;
+                        trace!("{file} is in chunk. keeping.");
+                    } else {
+                        trace!("{file} is in chunk. beaten by another file");
+                    }
                 } else {
-                    trace!("reached end of chunk");
                     files.push(file); // put the file back in the queue
-                    break;
-                }
-            }
 
-            if let Some(file) = chunk_file_to_keep {
-                trace!("keeping files {file}");
-                keep_files.insert(file);
+                    if file < period_end {
+                        trace!("reached end of period");
+                        continue 'period;
+                    } else {
+                        trace!("reached end of chunk");
+                        break;
+                    }
+                }
             }
         }
 
