@@ -1,8 +1,8 @@
+use chrono::Duration;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
 use std::fmt;
 use std::path::PathBuf;
-use std::time::Duration;
 
 #[derive(Deserialize)]
 pub struct Config {
@@ -16,60 +16,68 @@ pub struct Config {
     pub periods: Vec<ConfPeriod>,
 }
 
-#[derive(Deserialize)]
-pub struct ConfPeriod {
-    /// The total duration of this period
-    #[serde(deserialize_with = "parse_duration")]
-    pub period_length: Duration,
-
-    /// The size of chunks in this period. Each chunk should hold 1 file.
-    #[serde(deserialize_with = "parse_duration")]
-    pub chunk_size: Duration,
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+pub enum SimpleDuration {
+    Weeks(i64),
+    Days(i64),
+    Hours(i64),
+    Minutes(i64),
+    Seconds(i64),
 }
 
-fn parse_duration<'de, D>(d: D) -> Result<Duration, D::Error>
+impl From<SimpleDuration> for Duration {
+    fn from(simple: SimpleDuration) -> Duration {
+        match simple {
+            SimpleDuration::Weeks(weeks) => Duration::weeks(weeks),
+            SimpleDuration::Days(days) => Duration::days(days),
+            SimpleDuration::Hours(hours) => Duration::hours(hours),
+            SimpleDuration::Minutes(minutes) => Duration::minutes(minutes),
+            SimpleDuration::Seconds(seconds) => Duration::seconds(seconds),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, Hash, PartialEq, Eq)]
+pub struct ConfPeriod {
+    /// The total duration of this period
+    #[serde(deserialize_with = "parse_simple_duration")]
+    pub period_length: SimpleDuration,
+
+    /// The size of chunks in this period. Each chunk should hold 1 file.
+    #[serde(deserialize_with = "parse_simple_duration")]
+    pub chunk_size: SimpleDuration,
+}
+
+impl ConfPeriod {
+    pub fn chunk_count(&self) -> i64 {
+        let period_length: Duration = self.period_length.into();
+        let chunk_size: Duration = self.chunk_size.into();
+        period_length.num_milliseconds() / chunk_size.num_milliseconds()
+    }
+}
+
+fn parse_simple_duration<'de, D>(d: D) -> Result<SimpleDuration, D::Error>
 where
     D: Deserializer<'de>,
 {
     let s = d.deserialize_string(StringVisitor)?;
+    let s = s.trim();
 
-    let mut duration = Duration::ZERO;
+    let suffix = s.chars().rev().next().unwrap();
+    let value = &s[..s.len() - suffix.len_utf8()];
 
-    for part in s.split_whitespace() {
-        if part.len() < 2 {
-            continue;
-        }
+    let value: u64 = value.parse().expect("failed to parse duration value");
+    let value = value as i64;
 
-        let suffix = part.chars().rev().next().unwrap();
-        let value = &part[..part.len() - suffix.len_utf8()];
-
-        let value: u32 = value.parse().expect("failed to parse duration value");
-
-        let second: Duration = Duration::from_secs(1);
-        let minute: Duration = second * 60;
-        let hour: Duration = minute * 60;
-        let day: Duration = hour * 24;
-        let week: Duration = day * 7;
-        let year: Duration = day * 365;
-
-        let unit = match suffix.to_ascii_lowercase() {
-            's' => second,
-            'm' => minute,
-            'h' => hour,
-            'd' => day,
-            'w' => week,
-            'y' => year,
-            _ => panic!("unknown unit of duration"),
-        };
-
-        duration += unit * value;
-    }
-
-    if duration == Duration::ZERO {
-        panic!("Invalid duration: Zero");
-    }
-
-    Ok(duration)
+    use SimpleDuration::*;
+    Ok(match suffix.to_ascii_lowercase() {
+        's' => Seconds(value),
+        'm' => Minutes(value),
+        'h' => Hours(value),
+        'd' => Days(value),
+        'w' => Weeks(value),
+        _ => panic!("unknown unit of duration"),
+    })
 }
 
 struct StringVisitor;

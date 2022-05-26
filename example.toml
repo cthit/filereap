@@ -2,6 +2,10 @@ path = "./test"
 #btrfs = true
 
 [[periods]]
+period_length = "10m"
+chunk_size = "1s"
+
+[[periods]]
 period_length = "1w"
 chunk_size = "1h"
 
