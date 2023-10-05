@@ -1,3 +1,6 @@
+//! CLI to delete dated files in a directory according to a time period config.
+//! Useful for backup directories that accumulate files over time.
+
 mod config;
 
 #[macro_use]
@@ -15,6 +18,7 @@ use std::path::PathBuf;
 type FileName = DateTime<FixedOffset>;
 
 #[derive(Parser)]
+#[command(version)]
 struct Opt {
     config: PathBuf,
 
