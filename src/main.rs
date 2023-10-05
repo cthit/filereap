@@ -4,14 +4,13 @@ mod config;
 extern crate log;
 
 use chrono::{DateTime, Duration, FixedOffset, Local};
-use clap::Parser;
+use clap::{ArgAction, Parser};
 use config::{ConfPeriod, Config, SimpleDuration};
+use eyre::{eyre, Context};
 use log::LevelFilter;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fs;
-use std::io;
 use std::path::PathBuf;
-use thiserror::Error;
 
 type FileName = DateTime<FixedOffset>;
 
@@ -20,7 +19,7 @@ struct Opt {
     config: PathBuf,
 
     /// Log more stuff
-    #[clap(long, short, parse(from_occurrences))]
+    #[clap(long, short, action = ArgAction::Count)]
     verbose: u8,
 
     /// Do not output anything but errors.
@@ -32,20 +31,9 @@ struct Opt {
     dry_run: bool,
 }
 
-#[derive(Debug, Error)]
-enum Error {
-    #[error("I/O error: {0}")]
-    IO(#[from] io::Error),
-
-    #[error("Failed to parse config: {0}")]
-    ParseConfig(#[from] toml::de::Error),
-
-    #[error("Failed to delete btrfs subvolume: {0}")]
-    DeleteSubvolume(String),
-}
-
-fn main() {
+fn main() -> eyre::Result<()> {
     let opt = Opt::parse();
+    color_eyre::install()?;
 
     let log_level = match opt.verbose {
         0 if opt.quiet => LevelFilter::Error,
@@ -58,14 +46,15 @@ fn main() {
         .filter(None, log_level)
         .init();
 
-    if let Err(e) = run(&opt) {
-        println!("{e}");
-    }
+    run(&opt)
 }
 
-fn run(opt: &Opt) -> Result<(), Error> {
-    let config = fs::read_to_string(&opt.config)?;
-    let config: Config = toml::from_str(&config)?;
+fn run(opt: &Opt) -> eyre::Result<()> {
+    let config = fs::read_to_string(&opt.config)
+        .wrap_err_with(|| format!("Failed to read config file {:?}", opt.config))?;
+
+    let config: Config = toml::from_str(&config).wrap_err("Failed to parse config file")?;
+
     debug!("periods:");
     for period in &config.periods {
         debug!(
@@ -77,18 +66,23 @@ fn run(opt: &Opt) -> Result<(), Error> {
     info!("scanning directory {:?}", config.path);
 
     let mut files = BinaryHeap::new();
-    for entry in fs::read_dir(&config.path)? {
-        let name = entry?.file_name();
+
+    let dir_err = || format!("Failed to read directory {:?}", config.path);
+
+    for entry in fs::read_dir(&config.path).wrap_err_with(dir_err)? {
+        let name = entry.wrap_err_with(dir_err)?.file_name();
         let name = name.to_string_lossy();
         if let Ok(time) = DateTime::parse_from_rfc3339(&name) {
             trace!("found \"{name}\"");
             files.push(time);
+        } else {
+            trace!("ignoring \"{name}\", couldn't parse filename as rfc3339");
         }
     }
     let files = files.into_sorted_vec();
 
     let now = Local::now();
-    let keep_files = check_files_to_keep(now, &config.periods, &files)?;
+    let keep_files = check_files_to_keep(now, &config.periods, &files);
 
     info!("final decision:");
     for &file in &files {
@@ -113,7 +107,7 @@ fn check_files_to_keep(
     now: DateTime<Local>,
     periods: &[ConfPeriod],
     files: &[FileName],
-) -> Result<HashSet<FileName>, Error> {
+) -> HashSet<FileName> {
     let mut files = files.to_vec();
 
     debug_assert_eq!(
@@ -166,10 +160,10 @@ fn check_files_to_keep(
         }
     }
 
-    Ok(chunked_files.values().copied().collect())
+    chunked_files.values().copied().collect()
 }
 
-fn delete_file(config: &Config, file: FileName) -> Result<(), Error> {
+fn delete_file(config: &Config, file: FileName) -> eyre::Result<()> {
     let file_path = config.path.join(file.to_rfc3339());
 
     if config.btrfs {
@@ -177,20 +171,28 @@ fn delete_file(config: &Config, file: FileName) -> Result<(), Error> {
         use std::process::Command;
         let output = Command::new("btrfs")
             .args(["subvolume", "delete"])
-            .arg(file_path)
-            .output()?;
+            .arg(&file_path)
+            .output()
+            .wrap_err("failed to run 'btrfs subvolume delete'")?;
 
         if !output.status.success() {
             let msg = String::from_utf8(output.stderr)
                 .unwrap_or_else(|_| "Failed to capture stderr".to_string());
-            return Err(Error::DeleteSubvolume(msg));
+
+            return Err(
+                eyre!("btrfs subvolume delete exited with code {}", output.status)
+                    .wrap_err(msg)
+                    .wrap_err(format!("Failed to delete subvolume {file_path:?}")),
+            );
         };
     } else if file_path.is_dir() {
         trace!("rm -r {file_path:?}");
-        fs::remove_dir_all(file_path)?;
+        fs::remove_dir_all(&file_path)
+            .wrap_err_with(|| format!("Failed to remove directory {file_path:?}"))?;
     } else {
         trace!("rm {file_path:?}");
-        fs::remove_file(file_path)?;
+        fs::remove_file(&file_path)
+            .wrap_err_with(|| format!("Failed to remove file {file_path:?}"))?;
     }
 
     Ok(())
