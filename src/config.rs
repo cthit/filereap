@@ -1,6 +1,6 @@
 use chrono::Duration;
 use serde::de::Visitor;
-use serde::{Deserialize, Deserializer};
+use serde::{de::Error, Deserialize, Deserializer};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -56,17 +56,34 @@ impl ConfPeriod {
     }
 }
 
+/// Deserialize a [SimpleDuration] from a string like "3d" or "24h".
 fn parse_simple_duration<'de, D>(d: D) -> Result<SimpleDuration, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let s = d.deserialize_string(StringVisitor)?;
+    let s = d.deserialize_str(StrVisitor)?;
     let s = s.trim();
 
-    let suffix = s.chars().rev().next().unwrap();
+    if s.contains(char::is_whitespace) {
+        return Err(D::Error::custom("duration can't include whitespace"));
+    }
+
+    let suffix = s
+        .chars()
+        .next_back()
+        .ok_or_else(|| D::Error::custom("duration can't be empty"))?;
+
+    if suffix.is_ascii_digit() {
+        return Err(D::Error::custom(
+            r#"specify duration with a suffix, i.e. "24h""#,
+        ));
+    }
+
     let value = &s[..s.len() - suffix.len_utf8()];
 
-    let value: u64 = value.parse().expect("failed to parse duration value");
+    let value: u64 = value
+        .parse()
+        .map_err(|e| D::Error::custom(format!("failed to parse duration value: {e}")))?;
     let value = value as i64;
 
     use SimpleDuration::*;
@@ -76,24 +93,23 @@ where
         'h' => Hours(value),
         'd' => Days(value),
         'w' => Weeks(value),
-        _ => panic!("unknown unit of duration"),
+        d => return Err(D::Error::custom(format!("unknown unit of duration: {d:?}"))),
     })
 }
 
-struct StringVisitor;
+struct StrVisitor;
 
-impl<'de> Visitor<'de> for StringVisitor {
-    type Value = String;
+impl<'de> Visitor<'de> for StrVisitor {
+    type Value = &'de str;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a string")
     }
 
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
-        Ok(value)
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
-        Ok(value.to_string())
+    fn visit_borrowed_str<E>(self, s: &'de str) -> Result<Self::Value, E>
+    where
+        E: Error,
+    {
+        Ok(s)
     }
 }
